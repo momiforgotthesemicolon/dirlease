@@ -6,7 +6,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{
+    DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt,
+};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -76,7 +78,9 @@ fn unhex(text: &str) -> io::Result<Vec<u8>> {
     }
     (0..text.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(io::Error::other))
+        .map(|i| {
+            u8::from_str_radix(&text[i..i + 2], 16).map_err(io::Error::other)
+        })
         .collect()
 }
 
@@ -100,7 +104,8 @@ impl Store {
         let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
         let mut lines = text.lines();
         if lines.next() != Some("dirlease-v1")
-            || lines.next() != Some(hex(store.root.as_os_str().as_bytes()).as_str())
+            || lines.next()
+                != Some(hex(store.root.as_os_str().as_bytes()).as_str())
         {
             return Err(io::Error::other(
                 "invalid lease state version or changed temporary root",
@@ -114,7 +119,8 @@ impl Store {
             {
                 return Err(io::Error::other("invalid lease record"));
             }
-            let number = |i: usize| fields[i].parse::<u64>().map_err(io::Error::other);
+            let number =
+                |i: usize| fields[i].parse::<u64>().map_err(io::Error::other);
             store.leases.push(Lease {
                 id: fields[0].into(),
                 session: unhex(fields[1])?,
@@ -248,13 +254,18 @@ impl Store {
 
 fn matches_identity(path: &Path, lease: &Lease) -> io::Result<bool> {
     match fs::symlink_metadata(path) {
-        Ok(meta) => Ok(meta.is_dir() && meta.dev() == lease.device && meta.ino() == lease.inode),
+        Ok(meta) => Ok(meta.is_dir()
+            && meta.dev() == lease.device
+            && meta.ino() == lease.inode),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
     }
 }
 
-fn open_directory(parent: impl AsFd, name: impl rustix::path::Arg) -> rustix::io::Result<File> {
+fn open_directory(
+    parent: impl AsFd,
+    name: impl rustix::path::Arg,
+) -> rustix::io::Result<File> {
     Ok(File::from(descriptor::openat(
         parent,
         name,
@@ -310,10 +321,19 @@ fn remove_lease_with_hook(
         Mode::empty(),
     )?;
     let quarantine = format!(".cleanup-{}", lease.id);
-    match descriptor::statat(&root_directory, &quarantine, AtFlags::SYMLINK_NOFOLLOW) {
+    match descriptor::statat(
+        &root_directory,
+        &quarantine,
+        AtFlags::SYMLINK_NOFOLLOW,
+    ) {
         Ok(_) => {}
         Err(rustix::io::Errno::NOENT) => {
-            match descriptor::renameat(&root_directory, &lease.id, &root_directory, &quarantine) {
+            match descriptor::renameat(
+                &root_directory,
+                &lease.id,
+                &root_directory,
+                &quarantine,
+            ) {
                 Ok(()) => {}
                 Err(rustix::io::Errno::NOENT) => return Ok(()),
                 Err(error) => return Err(error.into()),
@@ -332,10 +352,19 @@ fn remove_lease_with_hook(
     };
     if !original {
         if matches!(
-            descriptor::statat(&root_directory, &lease.id, AtFlags::SYMLINK_NOFOLLOW),
+            descriptor::statat(
+                &root_directory,
+                &lease.id,
+                AtFlags::SYMLINK_NOFOLLOW
+            ),
             Err(rustix::io::Errno::NOENT)
         ) {
-            descriptor::renameat(&root_directory, &quarantine, &root_directory, &lease.id)?;
+            descriptor::renameat(
+                &root_directory,
+                &quarantine,
+                &root_directory,
+                &lease.id,
+            )?;
         }
         return Err(io::Error::other(format!(
             "refusing replaced lease {}",
@@ -357,7 +386,8 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("dirlease-test-{}", unique()));
+            let path = std::env::temp_dir()
+                .join(format!("dirlease-test-{}", unique()));
             private_directory(&path).unwrap();
             Self(path)
         }
@@ -396,7 +426,10 @@ mod tests {
         let fresh = store.create(b"two".to_vec(), 5, true, 111).unwrap();
         assert_ne!(other, fresh);
         fs::remove_dir(&fresh).unwrap();
-        assert_ne!(fresh, store.create(b"two".to_vec(), 5, false, 112).unwrap());
+        assert_ne!(
+            fresh,
+            store.create(b"two".to_vec(), 5, false, 112).unwrap()
+        );
     }
 
     #[test]
@@ -440,14 +473,16 @@ mod tests {
         fs::create_dir(&outside).unwrap();
         fs::write(outside.join("keep"), b"external").unwrap();
         symlink(&outside, path.join("link")).unwrap();
-        let quarantine = store.root.join(format!(".cleanup-{}", store.leases[0].id));
+        let quarantine =
+            store.root.join(format!(".cleanup-{}", store.leases[0].id));
         let moved_original = fixture.0.join("moved-original");
         // Step #2: Replace quarantine after its opened identity passes validation.
-        let result = remove_lease_with_hook(&store.root, &store.leases[0], || {
-            fs::rename(&quarantine, &moved_original).unwrap();
-            fs::create_dir(&quarantine).unwrap();
-            fs::write(quarantine.join("keep"), b"replacement").unwrap();
-        });
+        let result =
+            remove_lease_with_hook(&store.root, &store.leases[0], || {
+                fs::rename(&quarantine, &moved_original).unwrap();
+                fs::create_dir(&quarantine).unwrap();
+                fs::write(quarantine.join("keep"), b"replacement").unwrap();
+            });
         assert!(result.is_err());
         assert_eq!(fs::read(quarantine.join("keep")).unwrap(), b"replacement");
         assert_eq!(fs::read(outside.join("keep")).unwrap(), b"external");
@@ -504,7 +539,10 @@ mod tests {
         let mut store = fixture.store();
         assert!(store.create(b"one".to_vec(), u64::MAX, false, 1).is_err());
         fs::write(fixture.0.join("state/leases"), b"corrupt").unwrap();
-        assert!(Store::load(fixture.0.join("state"), fixture.0.join("temp")).is_err());
+        assert!(
+            Store::load(fixture.0.join("state"), fixture.0.join("temp"))
+                .is_err()
+        );
         assert_eq!(unhex(&hex(b"\xff\x00")).unwrap(), b"\xff\x00");
     }
 }

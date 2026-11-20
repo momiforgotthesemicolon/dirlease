@@ -27,7 +27,12 @@ fn duration(value: &str) -> Result<u64, String> {
         "m" => 60,
         "h" => 3600,
         "d" => 86400,
-        _ => return Err("TTL must be a positive integer followed by s, m, h, or d".into()),
+        _ => {
+            return Err(
+                "TTL must be a positive integer followed by s, m, h, or d"
+                    .into(),
+            );
+        }
     };
     // Step #2: Validate the quantity and checked unit conversion.
     digits
@@ -42,7 +47,9 @@ fn parse(arguments: Vec<OsString>) -> Result<CliCommand, String> {
     // Step #1: Recognize standalone information and worker commands.
     match arguments.as_slice() {
         [arg] if arg == "--help" || arg == "-h" => return Ok(CliCommand::Help),
-        [arg] if arg == "--version" || arg == "-V" => return Ok(CliCommand::Version),
+        [arg] if arg == "--version" || arg == "-V" => {
+            return Ok(CliCommand::Version);
+        }
         [arg] if arg == "serve" => return Ok(CliCommand::Serve),
         _ => {}
     }

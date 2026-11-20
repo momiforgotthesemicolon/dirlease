@@ -24,13 +24,19 @@ fn locations() -> io::Result<(PathBuf, PathBuf)> {
     let state = if let Some(path) = std::env::var_os("DIRLEASE_STATE_DIR") {
         PathBuf::from(path)
     } else if cfg!(target_os = "macos") {
-        PathBuf::from(std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is required"))?)
-            .join("Library/Application Support/dirlease")
+        PathBuf::from(
+            std::env::var_os("HOME")
+                .ok_or_else(|| io::Error::other("HOME is required"))?,
+        )
+        .join("Library/Application Support/dirlease")
     } else if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
         PathBuf::from(path).join("dirlease")
     } else {
-        PathBuf::from(std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is required"))?)
-            .join(".local/state/dirlease")
+        PathBuf::from(
+            std::env::var_os("HOME")
+                .ok_or_else(|| io::Error::other("HOME is required"))?,
+        )
+        .join(".local/state/dirlease")
     };
     let root = std::env::var_os("DIRLEASE_TEMP_ROOT")
         .map(PathBuf::from)
@@ -104,7 +110,11 @@ fn launch() -> io::Result<()> {
 }
 
 /// Request a persisted lease, starting a detached worker if necessary.
-pub(crate) fn request(session: OsString, ttl: u64, fresh: bool) -> Result<Vec<u8>, String> {
+pub(crate) fn request(
+    session: OsString,
+    ttl: u64,
+    fresh: bool,
+) -> Result<Vec<u8>, String> {
     // Step #1: Bound startup retries, including a worker racing another client.
     let (state, _) = locations().map_err(|e| e.to_string())?;
     std::env::set_current_dir(&state).map_err(|e| e.to_string())?;
@@ -150,9 +160,15 @@ fn handle(store: &mut Store, stream: &mut UnixStream) -> io::Result<()> {
     if bytes.len() < 10 || bytes[0] > 1 {
         return Err(io::Error::other("invalid create request"));
     }
-    let ttl = u64::from_be_bytes(bytes[1..9].try_into().map_err(io::Error::other)?);
+    let ttl =
+        u64::from_be_bytes(bytes[1..9].try_into().map_err(io::Error::other)?);
     // Step #2: Encode errors separately from native absolute paths.
-    let response = match store.create(bytes[9..].to_vec(), ttl, bytes[0] == 1, lease::now()?) {
+    let response = match store.create(
+        bytes[9..].to_vec(),
+        ttl,
+        bytes[0] == 1,
+        lease::now()?,
+    ) {
         Ok(path) => {
             let mut bytes = vec![0];
             bytes.extend_from_slice(path.as_os_str().as_bytes());
@@ -186,9 +202,10 @@ fn lock(state: &std::path::Path) -> io::Result<File> {
 pub(crate) fn serve() -> Result<(), String> {
     // Step #1: Own the persistent lock before recovering state or replacing a stale socket.
     let (state, root) = locations().map_err(|e| e.to_string())?;
-    let _lock = lock(&state).map_err(|e| format!("worker lock {}: {e}", state.display()))?;
-    let mut store =
-        Store::load(state.clone(), root).map_err(|e| format!("load {}: {e}", state.display()))?;
+    let _lock = lock(&state)
+        .map_err(|e| format!("worker lock {}: {e}", state.display()))?;
+    let mut store = Store::load(state.clone(), root)
+        .map_err(|e| format!("load {}: {e}", state.display()))?;
     std::env::set_current_dir(&state).map_err(|e| e.to_string())?;
     let socket = PathBuf::from("worker.sock");
     match fs::remove_file(&socket) {
@@ -196,8 +213,8 @@ pub(crate) fn serve() -> Result<(), String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.to_string()),
     }
-    let listener =
-        UnixListener::bind(&socket).map_err(|e| format!("bind {}: {e}", socket.display()))?;
+    let listener = UnixListener::bind(&socket)
+        .map_err(|e| format!("bind {}: {e}", socket.display()))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     fs::write(state.join("worker.pid"), std::process::id().to_string())
         .map_err(|e| e.to_string())?;
@@ -205,7 +222,9 @@ pub(crate) fn serve() -> Result<(), String> {
     let mut next_cleanup = Instant::now();
     loop {
         if Instant::now() >= next_cleanup {
-            if let Err(error) = store.cleanup(lease::now().map_err(|e| e.to_string())?) {
+            if let Err(error) =
+                store.cleanup(lease::now().map_err(|e| e.to_string())?)
+            {
                 eprintln!("dirlease cleanup: {error}");
             }
             next_cleanup = Instant::now() + Duration::from_secs(1);

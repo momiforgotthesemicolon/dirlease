@@ -1,7 +1,7 @@
 # dirlease
 
 Create a temporary session directory now; remove it after a fixed lifetime. Unix
-only (macOS and Linux), with no external Rust dependencies.
+only (macOS and Linux), using rustix for safe filesystem descriptor access.
 
 ```sh
 # Initialize once in the parent shell or agent launcher; children inherit it.
