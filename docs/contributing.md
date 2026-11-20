@@ -1,3 +1,5 @@
+If you are using AI to contribute to this repository, you must follow the rules:
+
 # Contribution workflow
 
 Work starts from the user's task description and acceptance criteria. No issue
