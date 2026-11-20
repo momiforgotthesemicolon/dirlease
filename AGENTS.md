@@ -143,8 +143,8 @@ intentionally package-sensitive.
   narrower scopes.
 
 Run `bazel run :review-diff` before reporting a completed change or committing.
-Run focused tests plus format checks and lint for the touched scope. The CLI
-scaffold does not implement directory creation, scheduling, or cleanup yet.
+Run focused tests plus format checks and lint for the touched scope. The Unix
+CLI implements session leases, durable state, and background cleanup.
 
 ## Repository Skills
 
