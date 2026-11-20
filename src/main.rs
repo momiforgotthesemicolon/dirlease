@@ -20,7 +20,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("dirlease: directory leases are not implemented yet; use --help");
+            eprintln!(
+                "dirlease: directory leases are not implemented yet; use --help"
+            );
             ExitCode::FAILURE
         }
     }
