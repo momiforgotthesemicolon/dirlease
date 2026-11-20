@@ -1,0 +1,8 @@
+common --enable_bzlmod
+common --http_timeout_scaling=4.0
+build --@rules_rust//rust/settings:rustfmt.toml=//:rustfmt.toml
+build --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+build --macos_minimum_os=11.0
+build:release --compilation_mode=opt
+test --test_output=errors
+try-import %workspace%/user.bazelrc

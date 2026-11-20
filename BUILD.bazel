@@ -1,0 +1,19 @@
+load("//:build_defs.bzl", "repo_commands")
+
+exports_files(["rustfmt.toml"])
+
+alias(
+    name = "dirlease",
+    actual = "//src:dirlease",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "test",
+    tests = [
+        "//src:test",
+        "//tools:test",
+    ],
+)
+
+repo_commands(scope = ".")

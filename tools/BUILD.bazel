@@ -1,0 +1,32 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//:build_defs.bzl", "repo_commands")
+
+exports_files(
+    ["quality.sh"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "quality_files",
+    srcs = [
+        "quality.py",
+        "tool_versions.json",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+sh_test(
+    name = "quality_test",
+    srcs = ["quality_test.sh"],
+    data = [
+        "quality.py",
+        "quality_test.py",
+    ],
+)
+
+test_suite(
+    name = "test",
+    tests = [":quality_test"],
+)
+
+repo_commands(scope = "tools")

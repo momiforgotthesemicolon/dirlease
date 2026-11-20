@@ -1,0 +1,25 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//:build_defs.bzl", "repo_commands")
+
+rust_binary(
+    name = "dirlease",
+    srcs = ["main.rs"],
+    edition = "2024",
+    rustc_flags = ["-Dwarnings"],
+    visibility = ["//visibility:public"],
+)
+
+sh_test(
+    name = "cli_test",
+    srcs = ["cli_test.sh"],
+    args = ["$(rootpath :dirlease)"],
+    data = [":dirlease"],
+)
+
+test_suite(
+    name = "test",
+    tests = [":cli_test"],
+)
+
+repo_commands(scope = "src")

@@ -1,0 +1,9 @@
+/bazel-*
+/target/
+/user.bazelrc
+/.venv/
+/.tools/
+/.codex/worktrees/
+__pycache__/
+*.py[cod]
+.DS_Store

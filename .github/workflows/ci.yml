@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bazel-contrib/setup-bazel@0.15.0
+      - run: bazel build //:dirlease
+      - run: bazel test //...
+
+  quality:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bazel-contrib/setup-bazel@0.15.0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+          cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install pinned repository tools
+        run: tools/install-dev-tools.sh
+      - run: bazel run //:format_check
+      - run: bazel run //:lint
