@@ -1,8 +1,10 @@
 //! Durable lease records and identity-checked cleanup under private roots.
 
+use rustix::fs::{self as descriptor, AtFlags, Dir, Mode, OFlags};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -252,29 +254,99 @@ fn matches_identity(path: &Path, lease: &Lease) -> io::Result<bool> {
     }
 }
 
+fn open_directory(parent: impl AsFd, name: impl rustix::path::Arg) -> rustix::io::Result<File> {
+    Ok(File::from(descriptor::openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?))
+}
+
+/// Remove children relative to retained descriptors; never follow a symlink.
+fn remove_contents(directory: &File) -> io::Result<()> {
+    // Step #1: Enumerate the opened directory, ignoring traversal aliases.
+    for entry in Dir::read_from(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == c"." || name == c".." {
+            continue;
+        }
+        // Step #2: Recurse only through no-follow directory descriptors.
+        match open_directory(directory, name) {
+            Ok(child) => {
+                remove_contents(&child)?;
+                descriptor::unlinkat(directory, name, AtFlags::REMOVEDIR)?;
+            }
+            Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+                descriptor::unlinkat(directory, name, AtFlags::empty())?;
+            }
+            Err(rustix::io::Errno::NOENT) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 fn remove_lease(root: &Path, lease: &Lease) -> io::Result<()> {
-    // Step #1: Quarantine the named entry, then inspect the entry actually moved.
-    let path = root.join(&lease.id);
-    let quarantine = root.join(format!(".cleanup-{}", lease.id));
-    if !quarantine.try_exists()? {
-        match fs::rename(&path, &quarantine) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e),
+    remove_lease_with_hook(root, lease, || {}).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cleanup {}: {error}", root.join(&lease.id).display()),
+        )
+    })
+}
+
+/// The hook runs after descriptor identity validation, before any recursive deletion.
+fn remove_lease_with_hook(
+    root: &Path,
+    lease: &Lease,
+    after_validation: impl FnOnce(),
+) -> io::Result<()> {
+    // Step #1: Anchor quarantine operations to the opened root, including restart recovery.
+    let root_directory = descriptor::open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let quarantine = format!(".cleanup-{}", lease.id);
+    match descriptor::statat(&root_directory, &quarantine, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => {}
+        Err(rustix::io::Errno::NOENT) => {
+            match descriptor::renameat(&root_directory, &lease.id, &root_directory, &quarantine) {
+                Ok(()) => {}
+                Err(rustix::io::Errno::NOENT) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
         }
+        Err(error) => return Err(error.into()),
     }
-    // Step #2: Delete only the original directory; restore a replacement without following it.
-    if matches_identity(&quarantine, lease)? {
-        fs::remove_dir_all(&quarantine)
-    } else {
-        if !path.try_exists()? {
-            fs::rename(&quarantine, &path)?;
+    // Step #2: Validate the descriptor that will be traversed, never its mutable pathname.
+    let directory = open_directory(&root_directory, quarantine.as_str());
+    let original = match &directory {
+        Ok(directory) => {
+            let metadata = directory.metadata()?;
+            metadata.dev() == lease.device && metadata.ino() == lease.inode
         }
-        Err(io::Error::other(format!(
+        Err(_) => false,
+    };
+    if !original {
+        if matches!(
+            descriptor::statat(&root_directory, &lease.id, AtFlags::SYMLINK_NOFOLLOW),
+            Err(rustix::io::Errno::NOENT)
+        ) {
+            descriptor::renameat(&root_directory, &quarantine, &root_directory, &lease.id)?;
+        }
+        return Err(io::Error::other(format!(
             "refusing replaced lease {}",
-            path.display()
-        )))
+            root.join(&lease.id).display()
+        )));
     }
+    // Step #3: Retain the validated descriptor across concurrent renames and recursive deletion.
+    after_validation();
+    remove_contents(&directory?)?;
+    descriptor::unlinkat(&root_directory, &quarantine, AtFlags::REMOVEDIR)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -354,6 +426,32 @@ mod tests {
         fs::create_dir(&replaced).unwrap();
         assert!(store.cleanup(102).is_err());
         assert!(replaced.is_dir());
+    }
+
+    #[test]
+    fn cleanup_replacement_after_validation_preserves_substituted_contents() {
+        // Step #1: Allocate an expired lease containing nested data and an external symlink.
+        let fixture = Fixture::new();
+        let mut store = fixture.store();
+        let path = store.create(b"one".to_vec(), 1, false, 100).unwrap();
+        fs::create_dir(path.join("nested")).unwrap();
+        fs::write(path.join("nested/remove"), b"expired").unwrap();
+        let outside = fixture.0.join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), b"external").unwrap();
+        symlink(&outside, path.join("link")).unwrap();
+        let quarantine = store.root.join(format!(".cleanup-{}", store.leases[0].id));
+        let moved_original = fixture.0.join("moved-original");
+        // Step #2: Replace quarantine after its opened identity passes validation.
+        let result = remove_lease_with_hook(&store.root, &store.leases[0], || {
+            fs::rename(&quarantine, &moved_original).unwrap();
+            fs::create_dir(&quarantine).unwrap();
+            fs::write(quarantine.join("keep"), b"replacement").unwrap();
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(quarantine.join("keep")).unwrap(), b"replacement");
+        assert_eq!(fs::read(outside.join("keep")).unwrap(), b"external");
+        assert_eq!(fs::read_dir(&moved_original).unwrap().count(), 0);
     }
 
     #[test]

@@ -2,8 +2,9 @@
 
 Bazel is the build and validation entry point. Cargo metadata supports editors
 and local Rust tooling; keep its package version, edition, and dependencies
-aligned with Bazel. The Unix CLI uses the standard library and small Unix
-system-call bindings; no external Rust crates are required.
+aligned with Bazel. The Unix CLI uses the standard library, small Unix
+system-call bindings, and rustix for safe descriptor-relative filesystem access.
+Bazel crate-universe resolves dependencies from `Cargo.toml` and `Cargo.lock`.
 
 Install Bazelisk, Python 3.10 or newer, Go (with toolchain downloads enabled),
 and ShellCheck 0.11.0. Run `tools/install-dev-tools.sh` to install pinned

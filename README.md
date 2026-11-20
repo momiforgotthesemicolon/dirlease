@@ -50,8 +50,11 @@ The worker flushes an atomic state snapshot and its directory entry before
 returning a path. It sweeps overdue leases on restart, then every second, and
 retains failures for retry. Expiry uses persisted Unix wall-clock seconds; clock
 changes affect deadlines. Sleeps use monotonic time. Cleanup quarantines the
-entry and checks the recorded device/inode before recursive removal; it does not
-follow symlinks or delete a substituted directory. Interrupted quarantine
+entry, opens it without following symlinks, and verifies the descriptor against
+the recorded device/inode. Recursive removal stays relative to retained
+directory descriptors, so replacing quarantine cannot redirect traversal. The
+final nonrecursive unlink can remove an empty replacement directory; nonempty
+replacements are preserved and reported for retry. Interrupted quarantine
 operations are resumed. Missing paths are retired. State corruption fails
 closed. A crash between directory allocation and its first state commit can
 leave an unacknowledged orphan; it is preserved rather than guessing ownership.

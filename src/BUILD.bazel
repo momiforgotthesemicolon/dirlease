@@ -12,6 +12,7 @@ rust_binary(
     edition = "2024",
     rustc_flags = ["-Dwarnings"],
     visibility = ["//visibility:public"],
+    deps = ["@crates//:rustix"],
 )
 
 rust_test(
