@@ -1,0 +1,86 @@
+name: Release packages
+
+on:
+  pull_request:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: bazel-contrib/setup-bazel@0.15.0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Validate intentional release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          if gh release view "$GITHUB_REF_NAME"; then
+            echo 'A release already exists; refusing to overwrite it.' >&2
+            exit 1
+          fi
+      - run: bazel test //:test
+      - run: bazel build --config=release //:dirlease
+      - name: Package and verify
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: |
+          version=$(python3 -c 'from tools.release import version; from pathlib import Path; print(version(Path(".")))')
+          bazel run //tools:release -- --tag "${RELEASE_TAG:-v$version}" --binary "$PWD/bazel-bin/src/dirlease" --output "$RUNNER_TEMP/packages"
+          cd "$RUNNER_TEMP/packages"
+          shasum -a 256 -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.os }}
+          path: ${{ runner.temp }}/packages/
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+      - name: Publish new release without replacing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir assets
+          for package in packages/*; do
+            (cd "$package" && shasum -a 256 -c SHA256SUMS)
+            for asset in "$package"/*; do
+              name=$(basename "$asset")
+              [ "$name" != SHA256SUMS ] || continue
+              if [ -e "assets/$name" ]; then
+                cmp "$asset" "assets/$name"
+              else
+                cp "$asset" "assets/$name"
+              fi
+            done
+          done
+          (cd assets && shasum -a 256 ./* > SHA256SUMS)
+          gh release create "$RELEASE_TAG" assets/* --verify-tag --title "$RELEASE_TAG" --generate-notes
