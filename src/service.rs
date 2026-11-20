@@ -82,6 +82,8 @@ fn read_frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
 }
 
 fn timeouts(stream: &UnixStream) -> io::Result<()> {
+    // Accepted sockets inherit the nonblocking listener mode on macOS.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))
 }
@@ -246,6 +248,20 @@ pub(crate) fn serve() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reads_delayed_frames_from_nonblocking_streams() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        timeouts(&server).unwrap();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            frame(&mut client, b"request").unwrap();
+        });
+        let response = read_frame(&mut server);
+        sender.join().unwrap();
+        assert_eq!(response.unwrap(), b"request");
+    }
+
     #[test]
     fn rejects_large_protocol_frames() {
         let (mut client, mut server) = UnixStream::pair().unwrap();
