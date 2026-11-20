@@ -139,3 +139,8 @@ See [development setup](docs/development.md), [Rust style](docs/STYLE.md), and
 ## License
 
 Licensed under the [MIT License](LICENSE).
+
+## Installation and releases
+
+See [Homebrew installation and maintainer releases](docs/releases.md) for the
+source tap, optional service, checksummed archives, and release dry runs.

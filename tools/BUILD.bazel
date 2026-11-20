@@ -1,3 +1,4 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//:build_defs.bzl", "repo_commands")
 
@@ -24,9 +25,27 @@ sh_test(
     ],
 )
 
+sh_binary(
+    name = "release",
+    srcs = ["release.sh"],
+    data = ["release.py"],
+)
+
+sh_test(
+    name = "release_test",
+    srcs = ["release_test.sh"],
+    data = [
+        "release.py",
+        "release_test.py",
+    ],
+)
+
 test_suite(
     name = "test",
-    tests = [":quality_test"],
+    tests = [
+        ":quality_test",
+        ":release_test",
+    ],
 )
 
 repo_commands(scope = "tools")
