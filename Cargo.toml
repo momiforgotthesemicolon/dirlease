@@ -3,5 +3,5 @@ name = "dirlease"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-description = "mkdir with scheduled cleanup for temporary agent workspaces"
+description = "Session-scoped temporary directories with durable scheduled cleanup"
 publish = false
