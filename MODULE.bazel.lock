@@ -479,7 +479,7 @@
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
           "REPO_MAPPING:rules_rust+,rules_rust rules_rust+",
           "FILE:@@//Cargo.lock ad1e76668db2113f1a3c3b219eff5f1949098a261ca78736f1d168a36fc3f1c0",
-          "FILE:@@//Cargo.toml 16ed81775b313369bedb224d779982aef77a7cab8c0342c39ed51743c6413287"
+          "FILE:@@//Cargo.toml e89cc95ecc15b224c17a66eff6aab51d6981f3e32dfc0799262a0ca5ebe89254"
         ],
         "generatedRepoSpecs": {
           "crates": {
