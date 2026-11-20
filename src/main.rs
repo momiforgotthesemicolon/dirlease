@@ -82,7 +82,7 @@ fn run() -> Result<(), String> {
         CliCommand::Help => println!(
             "dirlease — temporary session directories\n\nUsage: dirlease [create] [--ttl 25h] [--new]\n       dirlease serve\n\nSet DIRLEASE_SESSION to a unique, inherited session identifier.\nTTL units: s, m, h, d. Reuse never extends expiry. See README.md for supervision."
         ),
-        CliCommand::Version => println!("dirlease 0.1.0"),
+        CliCommand::Version => println!("dirlease 0.0.1-alpha"),
         // Step #2: Keep native filesystem bytes intact on the client output.
         CliCommand::Create { ttl, fresh } => {
             let session = std::env::var_os("DIRLEASE_SESSION").filter(|v| !v.is_empty())

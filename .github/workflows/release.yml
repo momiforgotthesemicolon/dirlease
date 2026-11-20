@@ -41,7 +41,7 @@ jobs:
           RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
         run: |
           version=$(python3 -c 'from tools.release import version; from pathlib import Path; print(version(Path(".")))')
-          bazel run //tools:release -- --tag "${RELEASE_TAG:-v$version}" --binary "$PWD/bazel-bin/src/dirlease" --output "$RUNNER_TEMP/packages"
+          bazel run --config=release //tools:release -- --tag "${RELEASE_TAG:-v$version}" --binary "$PWD/bazel-bin/src/dirlease" --output "$RUNNER_TEMP/packages"
           cd "$RUNNER_TEMP/packages"
           shasum -a 256 -c SHA256SUMS
       - uses: actions/upload-artifact@v4
@@ -83,4 +83,8 @@ jobs:
             done
           done
           (cd assets && shasum -a 256 ./* > SHA256SUMS)
-          gh release create "$RELEASE_TAG" assets/* --verify-tag --title "$RELEASE_TAG" --generate-notes
+          release_flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            release_flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" assets/* --verify-tag --title "$RELEASE_TAG" --generate-notes "${release_flags[@]}"

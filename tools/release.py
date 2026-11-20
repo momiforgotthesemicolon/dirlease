@@ -20,9 +20,9 @@ def git(root, *arguments):
 def version(root):
     manifest = (root / "Cargo.toml").read_text()
     package = re.search(r"(?ms)^\[package\]\n(.*?)(?=^\[|\Z)", manifest).group(1)
-    value = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', package, re.M)
+    value = re.search(r'^version = "([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)"$', package, re.M)
     if value is None:
-        raise ValueError("release version must be major.minor.patch")
+        raise ValueError("release version must be major.minor.patch with an optional prerelease suffix")
     value = value.group(1)
     cli = (root / "src/main.rs").read_text()
     lock = (root / "Cargo.lock").read_text()

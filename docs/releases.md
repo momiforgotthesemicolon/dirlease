@@ -30,9 +30,11 @@ the clients. Do not run two supervisors for the same store.
 ## Prepare and exercise a release
 
 Use Python 3.10 or newer. Change the version together in `Cargo.toml`, the
-`dirlease` entry in `Cargo.lock`, and the `--version` output in `src/main.rs`.
-Use plain `major.minor.patch` versions. Commit the complete change first. Bazel
-remains the build and test entry point:
+`dirlease` entry in `Cargo.lock`, the `--version` output in `src/main.rs`, the
+expectation in `src/cli_test.sh`, and the module version in `MODULE.bazel`. Use
+`major.minor.patch` versions with an optional prerelease suffix, such as
+`0.0.1-alpha`. Commit the complete change first. Bazel remains the build and
+test entry point:
 
 ```sh
 bazel test //:test
@@ -40,7 +42,7 @@ bazel run //:format_check
 bazel run //:lint
 bazel run //:review-diff
 bazel build --config=release //:dirlease
-bazel run //tools:release -- --tag v0.1.0 --binary "$PWD/bazel-bin/src/dirlease" --output /tmp/dirlease-release
+bazel run --config=release //tools:release -- --tag v0.0.1-alpha --binary "$PWD/bazel-bin/src/dirlease" --output /tmp/dirlease-release
 (cd /tmp/dirlease-release && shasum -a 256 -c SHA256SUMS)
 ```
 
@@ -68,7 +70,7 @@ Only a maintainer's deliberate `v*` tag push publishes. From an up-to-date
 git fetch origin --tags
 git switch main
 git pull --ff-only
-version=0.1.0
+version=0.0.1-alpha
 git tag "v$version"
 git push origin "v$version"
 ```
@@ -76,11 +78,12 @@ git push origin "v$version"
 Use the actual new version. Never force or move a published tag. The workflow
 requires the tagged commit to be an ancestor of `origin/main`, checks versions,
 builds both native packages and creates a new GitHub Release with checksums,
-source, binaries, provenance revision, and `dirlease.rb`. Only the final tag job
-gets `contents: write`; release creation refuses an existing release and does
-not replace assets. A failed partial publication requires manual inspection, not
-force-uploading assets. Protect release tags using repository rulesets as
-appropriate for maintainer access.
+source, binaries, provenance revision, and `dirlease.rb`. Tags with a prerelease
+suffix create a GitHub prerelease and do not replace the latest stable release.
+Only the final tag job gets `contents: write`; release creation refuses an
+existing release and does not replace assets. A failed partial publication
+requires manual inspection, not force-uploading assets. Protect release tags
+using repository rulesets as appropriate for maintainer access.
 
 Download the release and verify `SHA256SUMS` before extracting a binary. Archive
 names identify their actual host OS and architecture; install the extracted

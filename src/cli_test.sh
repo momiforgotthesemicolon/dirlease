@@ -7,7 +7,7 @@ export DIRLEASE_TEMP_ROOT="$TEST_TMPDIR/temp"
 export DIRLEASE_SESSION="test-session"
 worker=''
 trap 'if [[ -n "$worker" ]]; then kill "$worker" 2>/dev/null || true; wait "$worker" 2>/dev/null || true; fi' EXIT
-[[ "$("$binary" --version)" == "dirlease 0.1.0" ]]
+[[ "$("$binary" --version)" == "dirlease 0.0.1-alpha" ]]
 "$binary" --help | grep -q 'temporary session directories'
 if env -u DIRLEASE_SESSION "$binary" >"$TEST_TMPDIR/output" 2>"$TEST_TMPDIR/error"; then exit 1; fi
 [[ ! -s "$TEST_TMPDIR/output" ]]
