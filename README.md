@@ -27,3 +27,7 @@ bazel run //:review-diff
 See [development setup](docs/development.md), [Rust style](docs/STYLE.md), and
 [contribution workflow](docs/contributing.md). Agent skills live in
 `.agents/skills` and are shared with Codex and Claude.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
