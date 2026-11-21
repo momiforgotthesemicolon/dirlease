@@ -1,9 +1,9 @@
 class Dirlease < Formula
   desc "Session-scoped temporary directories with durable scheduled cleanup"
   homepage "https://github.com/momiforgotthesemicolon/dirlease"
-  url "https://codeload.github.com/momiforgotthesemicolon/dirlease/tar.gz/35d16bdcdbbfb84c5e8f137ef7ba308ed73f7e1a"
-  version "0.1.0"
-  sha256 "d281e2b0d8c45f34c938d55d5ba2ab439cad0d5ffccc444c2fee15e2abda7890"
+  url "https://github.com/momiforgotthesemicolon/dirlease/releases/download/v0.0.2-alpha/dirlease-0.0.2-alpha-source.tar.gz"
+  version "0.0.2-alpha"
+  sha256 "e794fca7730e99063f1d036457169ddd974557d0ce8c33fc38199f90efcd0ff5"
   license "MIT"
 
   depends_on "rust" => :build
@@ -18,7 +18,7 @@ class Dirlease < Formula
   end
 
   test do
-    assert_equal "dirlease 0.1.0", shell_output("#{bin}/dirlease --version").strip
+    assert_equal "dirlease 0.0.2-alpha", shell_output("#{bin}/dirlease --version").strip
     assert_match "DIRLEASE_SESSION", shell_output("#{bin}/dirlease --help")
   end
 end

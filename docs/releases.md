@@ -1,6 +1,6 @@
 # Releases and Homebrew
 
-The repository is also a Homebrew tap. After this change reaches `main`:
+The repository is also a Homebrew tap:
 
 ```sh
 brew tap momiforgotthesemicolon/dirlease https://github.com/momiforgotthesemicolon/dirlease.git
@@ -8,12 +8,20 @@ brew install momiforgotthesemicolon/dirlease/dirlease
 brew test momiforgotthesemicolon/dirlease/dirlease
 ```
 
-The initial formula installs version 0.1.0 from the existing public commit
-`35d16bdcdbbfb84c5e8f137ef7ba308ed73f7e1a`, verified with its actual archive
-SHA-256. It does not depend on a release that has not been published. Homebrew
-compiles from source using its Rust dependency and `cargo install --locked`;
-this is the distribution exception to the Bazel development entry point. There
-are no Homebrew bottles. The formula test only reads help and version.
+The formula installs version `0.0.2-alpha` from the published release source
+archive, pinned by SHA-256. Homebrew compiles from source using its Rust
+dependency and `cargo install --locked`; this is the distribution exception to
+the Bazel development entry point. There are no Homebrew bottles. The formula
+test only reads help and version.
+
+To replace an existing `0.1.0` installation with this prerelease, reinstall
+because Homebrew considers `0.1.0` newer:
+
+```sh
+brew update
+brew reinstall momiforgotthesemicolon/dirlease/dirlease
+dirlease --version
+```
 
 Clients start the cleanup worker automatically. An optional foreground service
 can instead be managed explicitly:
