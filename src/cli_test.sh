@@ -7,20 +7,25 @@ export DIRLEASE_TEMP_ROOT="$TEST_TMPDIR/temp"
 export DIRLEASE_SESSION="test-session"
 worker=''
 trap 'if [[ -n "$worker" ]]; then kill "$worker" 2>/dev/null || true; wait "$worker" 2>/dev/null || true; fi' EXIT
-[[ "$("$binary" --version)" == "dirlease 0.0.1-alpha" ]]
+[[ "$(env -u DIRLEASE_SESSION "$binary" --version)" == "dirlease 0.0.1-alpha" ]]
+[[ "$(DIRLEASE_SESSION='' "$binary" --version)" == "dirlease 0.0.1-alpha" ]]
 "$binary" --help | grep -q 'temporary session directories'
-if env -u DIRLEASE_SESSION "$binary" >"$TEST_TMPDIR/output" 2>"$TEST_TMPDIR/error"; then exit 1; fi
-[[ ! -s "$TEST_TMPDIR/output" ]]
-grep -q 'uuidgen' "$TEST_TMPDIR/error"
 "$binary" serve >"$TEST_TMPDIR/worker-output" 2>"$TEST_TMPDIR/worker-error" &
 worker=$!
 for _ in {1..100}; do
   [[ -S "$DIRLEASE_STATE_DIR/worker.sock" ]] && break
   sleep 0.02
 done
+automatic="$(env -u DIRLEASE_SESSION "$binary")"
+empty="$(DIRLEASE_SESSION='' "$binary")"
+[[ "$automatic" == "$DIRLEASE_TEMP_ROOT/"* && -d "$automatic" ]]
+[[ "$empty" == "$DIRLEASE_TEMP_ROOT/"* && -d "$empty" ]]
+[[ "$automatic" != "$empty" ]]
+[[ "$DIRLEASE_SESSION" == "test-session" ]]
 first="$("$binary")"
 [[ "$first" == "$DIRLEASE_TEMP_ROOT/"* && -d "$first" ]]
-[[ "$("$binary" create --ttl 2d)" == "$first" ]]
+[[ "$("$binary" create --ttl 2d 2>"$TEST_TMPDIR/error")" == "$first" ]]
+[[ ! -s "$TEST_TMPDIR/error" ]]
 pids=()
 for index in {1..8}; do
   "$binary" >"$TEST_TMPDIR/result-$index" &

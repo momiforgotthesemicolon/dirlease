@@ -76,17 +76,16 @@ fn parse(arguments: Vec<OsString>) -> Result<CliCommand, String> {
 }
 
 fn run() -> Result<(), String> {
-    // Step #1: Dispatch informational commands without opening state.
+    // Step #1: Initialize the process session before dispatching commands.
     let command = parse(std::env::args_os().skip(1).collect())?;
+    let session = initialize_session();
     match command {
         CliCommand::Help => println!(
-            "dirlease — temporary session directories\n\nUsage: dirlease [create] [--ttl 25h] [--new]\n       dirlease serve\n\nSet DIRLEASE_SESSION to a unique, inherited session identifier.\nTTL units: s, m, h, d. Reuse never extends expiry. See README.md for supervision."
+            "dirlease — temporary session directories\n\nUsage: dirlease [create] [--ttl 25h] [--new]\n       dirlease serve\n\nAn empty DIRLEASE_SESSION is initialized for this invocation.\nExport DIRLEASE_SESSION in the parent shell to share a session across commands.\nTTL units: s, m, h, d. Reuse never extends expiry. See README.md for supervision."
         ),
         CliCommand::Version => println!("dirlease 0.0.1-alpha"),
         // Step #2: Keep native filesystem bytes intact on the client output.
         CliCommand::Create { ttl, fresh } => {
-            let session = std::env::var_os("DIRLEASE_SESSION").filter(|v| !v.is_empty())
-                .ok_or("DIRLEASE_SESSION is required; initialize once with: export DIRLEASE_SESSION=\"$(uuidgen)\"; inherit it in child processes")?;
             let path = service::request(session, ttl, fresh)?;
             let mut output = io::stdout().lock();
             output
@@ -97,6 +96,19 @@ fn run() -> Result<(), String> {
         CliCommand::Serve => service::serve()?,
     }
     Ok(())
+}
+
+/// Initialize this process's empty session before any worker is started.
+fn initialize_session() -> OsString {
+    if let Some(session) =
+        std::env::var_os("DIRLEASE_SESSION").filter(|value| !value.is_empty())
+    {
+        return session;
+    }
+    let session = OsString::from(lease::unique());
+    // Safety: CLI startup is single-threaded, before worker or service startup.
+    unsafe { std::env::set_var("DIRLEASE_SESSION", &session) };
+    session
 }
 
 fn main() -> ExitCode {

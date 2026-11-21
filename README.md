@@ -4,6 +4,16 @@ Create a temporary session directory now; remove it after a fixed lifetime. Unix
 only (macOS and Linux), using rustix for safe filesystem descriptor access.
 
 ```sh
+workspace="$(dirlease)"                 # automatically creates a session
+cd "$workspace"
+```
+
+An unset or empty `DIRLEASE_SESSION` is initialized automatically for each
+invocation. A child process cannot export variables back into its parent shell,
+so separate commands get separate sessions unless you export a shared
+identifier:
+
+```sh
 # Initialize once in the parent shell or agent launcher; children inherit it.
 export DIRLEASE_SESSION="$(uuidgen)"
 workspace="$(dirlease)"                 # default TTL: 25 hours
@@ -12,7 +22,7 @@ dirlease create --ttl 2d               # reuses the same path and original expir
 dirlease --new --ttl 30m               # changes this session's current lease
 ```
 
-A nonempty `DIRLEASE_SESSION` is required. Choose a different identifier for
+A nonempty `DIRLEASE_SESSION` is preserved. Choose a different identifier for
 independent sessions; the identifier never becomes a filename. No arguments
 means `create`. TTL accepts positive integer seconds (`s`), minutes (`m`), hours
 (`h`), or days (`d`). Reuse does not renew the expiry, even with a different
