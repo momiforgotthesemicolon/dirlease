@@ -7,6 +7,10 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+unsafe extern "C" {
+    fn getsid(pid: i32) -> i32;
+}
+
 #[derive(Debug, PartialEq)]
 enum CliCommand {
     Create { ttl: u64, fresh: bool },
@@ -76,17 +80,16 @@ fn parse(arguments: Vec<OsString>) -> Result<CliCommand, String> {
 }
 
 fn run() -> Result<(), String> {
-    // Step #1: Initialize the process session before dispatching commands.
+    // Step #1: Dispatch informational commands without opening state.
     let command = parse(std::env::args_os().skip(1).collect())?;
-    let session = initialize_session();
     match command {
         CliCommand::Help => println!(
-            "dirlease — temporary session directories\n\nUsage: dirlease [create] [--ttl 25h] [--new]\n       dirlease serve\n\nAn empty DIRLEASE_SESSION is initialized for this invocation.\nExport DIRLEASE_SESSION in the parent shell to share a session across commands.\nTTL units: s, m, h, d. Reuse never extends expiry. See README.md for supervision."
+            "dirlease — temporary session directories\n\nUsage: dirlease [create] [--ttl 25h] [--new]\n       dirlease serve\n\nAn empty DIRLEASE_SESSION defaults to the current Unix session.\nExport DIRLEASE_SESSION to share a lease across Unix sessions.\nTTL units: s, m, h, d. Reuse never extends expiry. See README.md for supervision."
         ),
         CliCommand::Version => println!("dirlease 0.0.2-alpha"),
         // Step #2: Keep native filesystem bytes intact on the client output.
         CliCommand::Create { ttl, fresh } => {
-            let path = service::request(session, ttl, fresh)?;
+            let path = service::request(session()?, ttl, fresh)?;
             let mut output = io::stdout().lock();
             output
                 .write_all(&path)
@@ -98,17 +101,24 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-/// Initialize this process's empty session before any worker is started.
-fn initialize_session() -> OsString {
+/// Resolve the inherited identifier or the current Unix session ID.
+fn session() -> Result<OsString, String> {
+    // Step #1: Preserve a nonempty inherited identifier.
     if let Some(session) =
         std::env::var_os("DIRLEASE_SESSION").filter(|value| !value.is_empty())
     {
-        return session;
+        return Ok(session);
     }
-    let session = OsString::from(lease::unique());
-    // Safety: CLI startup is single-threaded, before worker or service startup.
-    unsafe { std::env::set_var("DIRLEASE_SESSION", &session) };
-    session
+    // Step #2: Derive a stable identifier shared by this Unix session's processes.
+    // SAFETY: getsid(0) reads the caller's session ID without pointer arguments.
+    let session_id = unsafe { getsid(0) };
+    if session_id < 0 {
+        return Err(format!(
+            "read Unix session ID: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(OsString::from(format!("unix-session:{session_id}")))
 }
 
 fn main() -> ExitCode {

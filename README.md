@@ -4,14 +4,16 @@ Create a temporary session directory now; remove it after a fixed lifetime. Unix
 only (macOS and Linux), using rustix for safe filesystem descriptor access.
 
 ```sh
-workspace="$(dirlease)"                 # automatically creates a session
+workspace="$(dirlease)"                 # reuses this Unix session's lease
 cd "$workspace"
 ```
 
-An unset or empty `DIRLEASE_SESSION` is initialized automatically for each
-invocation. A child process cannot export variables back into its parent shell,
-so separate commands get separate sessions unless you export a shared
-identifier:
+An unset or empty `DIRLEASE_SESSION` defaults to the current Unix session ID.
+Repeated commands, command substitutions, and child processes in that Unix
+session reuse the same lease. Shells in the same Unix session also share it;
+`--new` selects a fresh lease. Unix session IDs can be reused by the OS, so use
+an explicit identifier when isolation across logins matters or to share a lease
+across Unix sessions:
 
 ```sh
 # Initialize once in the parent shell or agent launcher; children inherit it.

@@ -20,10 +20,19 @@ automatic="$(env -u DIRLEASE_SESSION "$binary")"
 empty="$(DIRLEASE_SESSION='' "$binary")"
 [[ "$automatic" == "$DIRLEASE_TEMP_ROOT/"* && -d "$automatic" ]]
 [[ "$empty" == "$DIRLEASE_TEMP_ROOT/"* && -d "$empty" ]]
-[[ "$automatic" != "$empty" ]]
+[[ "$automatic" == "$empty" ]]
+[[ "$(env -u DIRLEASE_SESSION "$binary")" == "$automatic" ]]
+[[ "$(env -u DIRLEASE_SESSION "$binary" create --ttl 2d)" == "$automatic" ]]
+# A new Unix session gets an independent default lease.
+separate="$(env -u DIRLEASE_SESSION python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' "$binary")"
+[[ "$separate" != "$automatic" && -d "$separate" ]]
+automatic_fresh="$(env -u DIRLEASE_SESSION "$binary" --new)"
+[[ "$automatic_fresh" != "$automatic" && -d "$automatic" ]]
+[[ "$(DIRLEASE_SESSION='' "$binary")" == "$automatic_fresh" ]]
 [[ "$DIRLEASE_SESSION" == "test-session" ]]
 first="$("$binary")"
 [[ "$first" == "$DIRLEASE_TEMP_ROOT/"* && -d "$first" ]]
+[[ "$first" != "$automatic_fresh" ]]
 [[ "$("$binary" create --ttl 2d 2>"$TEST_TMPDIR/error")" == "$first" ]]
 [[ ! -s "$TEST_TMPDIR/error" ]]
 pids=()
@@ -48,6 +57,7 @@ for pid in "${pids[@]}"; do wait "$pid"; done
 for index in {1..8}; do [[ "$(cat "$TEST_TMPDIR/restarted-$index")" == "$fresh" ]]; done
 # Find the replacement worker through its lock owner for fixture teardown.
 worker="$(cat "$DIRLEASE_STATE_DIR/worker.pid")"
+[[ "$(env -u DIRLEASE_SESSION "$binary")" == "$automatic_fresh" ]]
 for _ in {1..250}; do
   [[ ! -e "$fresh" ]] && break
   sleep 0.02
