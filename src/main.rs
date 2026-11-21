@@ -83,7 +83,7 @@ fn run() -> Result<(), String> {
         CliCommand::Help => println!(
             "dirlease — temporary session directories\n\nUsage: dirlease [create] [--ttl 25h] [--new]\n       dirlease serve\n\nAn empty DIRLEASE_SESSION is initialized for this invocation.\nExport DIRLEASE_SESSION in the parent shell to share a session across commands.\nTTL units: s, m, h, d. Reuse never extends expiry. See README.md for supervision."
         ),
-        CliCommand::Version => println!("dirlease 0.0.1-alpha"),
+        CliCommand::Version => println!("dirlease 0.0.2-alpha"),
         // Step #2: Keep native filesystem bytes intact on the client output.
         CliCommand::Create { ttl, fresh } => {
             let path = service::request(session, ttl, fresh)?;

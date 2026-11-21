@@ -1,6 +1,6 @@
 [package]
 name = "dirlease"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 edition = "2024"
 rust-version = "1.92"
 description = "Session-scoped temporary directories with durable scheduled cleanup"
