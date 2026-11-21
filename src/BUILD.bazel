@@ -8,6 +8,7 @@ rust_binary(
         "lease.rs",
         "main.rs",
         "service.rs",
+        "worktree.rs",
     ],
     edition = "2024",
     rustc_flags = ["-Dwarnings"],

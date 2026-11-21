@@ -1,11 +1,12 @@
 //! Local socket transport and detached or supervised worker lifecycle.
 
 use crate::lease::{self, Store};
+use crate::worktree::Spec;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -117,6 +118,36 @@ pub(crate) fn request(
     ttl: u64,
     fresh: bool,
 ) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![u8::from(fresh)];
+    bytes.extend_from_slice(&ttl.to_be_bytes());
+    bytes.extend_from_slice(session.as_bytes());
+    exchange(bytes, false)
+}
+
+/// Request a serialized, durable Git worktree lease using native argument bytes.
+pub(crate) fn request_worktree(
+    session: OsString,
+    ttl: u64,
+    fresh: bool,
+    spec: &Spec,
+) -> Result<Vec<u8>, String> {
+    // Step #1: Encode checkout configuration without losing native path bytes.
+    let mut bytes = vec![2 + u8::from(fresh)];
+    bytes.extend_from_slice(&ttl.to_be_bytes());
+    for value in [
+        session.as_os_str(),
+        spec.repository.as_os_str(),
+        spec.revision.as_os_str(),
+        spec.branch.as_deref().unwrap_or_default(),
+    ] {
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
+    }
+    // Step #2: Allow the worker to complete a serialized Git checkout.
+    exchange(bytes, true)
+}
+
+fn exchange(bytes: Vec<u8>, worktree: bool) -> Result<Vec<u8>, String> {
     // Step #1: Bound startup retries, including a worker racing another client.
     let (state, _) = locations().map_err(|e| e.to_string())?;
     std::env::set_current_dir(&state).map_err(|e| e.to_string())?;
@@ -143,11 +174,19 @@ pub(crate) fn request(
     };
     // Step #2: Send native session bytes and decode a tagged native-path response.
     timeouts(&stream).map_err(|e| e.to_string())?;
-    let mut bytes = vec![u8::from(fresh)];
-    bytes.extend_from_slice(&ttl.to_be_bytes());
-    bytes.extend_from_slice(session.as_bytes());
+    if worktree {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(300)))
+            .map_err(|error| error.to_string())?;
+    }
     frame(&mut stream, &bytes).map_err(|e| e.to_string())?;
-    let response = read_frame(&mut stream).map_err(|e| e.to_string())?;
+    let response = read_frame(&mut stream).map_err(|error| {
+        if worktree {
+            format!("worktree response: {error}; after an upgrade, restart the cleanup worker; otherwise retry with the same --session")
+        } else {
+            error.to_string()
+        }
+    })?;
     match response.split_first() {
         Some((0, path)) => Ok(path.to_vec()),
         Some((1, error)) => Err(String::from_utf8_lossy(error).into_owned()),
@@ -159,18 +198,18 @@ fn handle(store: &mut Store, stream: &mut UnixStream) -> io::Result<()> {
     // Step #1: Validate the complete bounded request before touching lease state.
     timeouts(stream)?;
     let bytes = read_frame(stream)?;
-    if bytes.len() < 10 || bytes[0] > 1 {
+    if bytes.len() < 10 || bytes[0] > 3 {
         return Err(io::Error::other("invalid create request"));
     }
     let ttl =
         u64::from_be_bytes(bytes[1..9].try_into().map_err(io::Error::other)?);
     // Step #2: Encode errors separately from native absolute paths.
-    let response = match store.create(
-        bytes[9..].to_vec(),
-        ttl,
-        bytes[0] == 1,
-        lease::now()?,
-    ) {
+    let result = if bytes[0] < 2 {
+        store.create(bytes[9..].to_vec(), ttl, bytes[0] == 1, lease::now()?)
+    } else {
+        create_worktree(store, &bytes[9..], ttl, bytes[0] == 3)
+    };
+    let response = match result {
         Ok(path) => {
             let mut bytes = vec![0];
             bytes.extend_from_slice(path.as_os_str().as_bytes());
@@ -183,6 +222,38 @@ fn handle(store: &mut Store, stream: &mut UnixStream) -> io::Result<()> {
         }
     };
     frame(stream, &response)
+}
+
+fn create_worktree(
+    store: &mut Store,
+    bytes: &[u8],
+    ttl: u64,
+    fresh: bool,
+) -> io::Result<PathBuf> {
+    // Step #1: Decode exactly four NUL-terminated, native-byte arguments.
+    let fields: Vec<_> = bytes.split(|byte| *byte == 0).collect();
+    if fields.len() != 5
+        || !fields[4].is_empty()
+        || fields[..3].iter().any(|field| field.is_empty())
+    {
+        return Err(io::Error::other("invalid worktree request"));
+    }
+    let native = |bytes: &[u8]| OsString::from_vec(bytes.to_vec());
+    let repository = PathBuf::from(native(fields[1]));
+    if !repository.is_absolute() {
+        return Err(io::Error::other("worktree repository must be absolute"));
+    }
+    // Step #2: Resolve the repository in the worker before recording ownership.
+    let spec = Spec::new(
+        repository,
+        native(fields[2]),
+        if fields[3].is_empty() {
+            None
+        } else {
+            Some(native(fields[3]))
+        },
+    )?;
+    store.worktree(fields[0].to_vec(), ttl, fresh, lease::now()?, spec)
 }
 
 fn lock(state: &std::path::Path) -> io::Result<File> {

@@ -35,8 +35,51 @@ go to stderr. Paths and identifiers need not be UTF-8.
 
 **Expiry can delete files used by active consumers.** Returning a path cannot
 track activity. Choose a sufficient TTL. An activity-aware Bazel run wrapper is
-deferred. Git worktree directories are deleted as filesystem trees; run
-`git worktree prune` in the owning repository afterward to clear its metadata.
+deferred. Worktrees created manually inside plain directory leases are deleted
+as filesystem trees; run `git worktree prune` in their owning repository
+afterward. Use the worktree command below for automatic Git metadata cleanup.
+
+## Agent worktrees
+
+Rex or another launcher supplies one stable ID per agent worktree; no shell
+integration or exported environment variable is needed:
+
+```sh
+worktree="$(dirlease worktree --session "$agent_worktree_id" --repo "$repository" --branch agent/my-task --ttl 2d)"
+# Launch the agent with "$worktree" as its working directory.
+```
+
+Use the same ID, repository, ref, and branch options to retrieve the same path.
+TTL changes do not extend its deadline. `--ref` defaults to `HEAD`. Without
+`--branch`, the checkout has a detached HEAD. A missing branch is created from
+`--ref`; an existing branch is checked out at its current tip. Branches already
+in use are rejected by Git. `--new` allocates a fresh lease; it does not free a
+branch still used by an older worktree. A conflicting configuration for a live
+session is rejected. Keep the ID with the agent's worktree record, independently
+of Rex panes or Unix terminal sessions.
+
+The worker serializes creation, persists intent before invoking Git, and returns
+only the checkout's absolute path on stdout. Git must be on the worker's `PATH`.
+Repository hooks are disabled during creation. Checkouts live at
+`<lease>/checkout`; the entire lease expires at the fixed deadline, including
+dirty and untracked files. Active agents do not postpone expiry. Choose a TTL
+that covers the task, or use `git worktree lock "$worktree"` to prevent cleanup
+until `git worktree unlock "$worktree"`.
+
+Expiry removes the identity-checked lease and only its matching Git
+administrative registration. Unrelated stale registrations and branch refs are
+preserved; no repository-wide prune runs. Unavailable repositories, locked
+worktrees, and cleanup failures are retained for retry. Startup recovers
+unfinished creation and interrupted cleanup. A checkout moved out of its lease
+with `git worktree move` and its repaired registration are preserved.
+
+Stop an older cleanup worker before first using this command after upgrading,
+then allow a client to start the new worker or restart your configured service.
+The new worker reads directory-only v1 snapshots and writes v2 snapshots with
+worktree configuration and creation/retirement phases. Older binaries cannot
+read v2 state. Socket reads allow up to five minutes for worktree requests;
+retry with the same ID if a slow checkout outlasts the client wait. Long Git
+operations delay other requests and cleanup while the worker is occupied.
 
 ## Worker and durability
 
@@ -44,9 +87,9 @@ The client automatically starts a detached `dirlease serve` process with all
 standard streams closed to the caller. Command substitutions finish promptly. A
 private Unix socket serializes requests; a filesystem lock prevents duplicate
 workers. Startup retries take at most five seconds, and each socket read/write
-has a three-second timeout. `dirlease serve` runs in the foreground for
-diagnosis or supervision. Automatic startup diagnostics are suppressed; run the
-foreground command if startup fails.
+has a three-second timeout for directory requests. `dirlease serve` runs in the
+foreground for diagnosis or supervision. Automatic startup diagnostics are
+suppressed; run the foreground command if startup fails.
 
 State lives outside temporary storage: `~/Library/Application Support/dirlease`
 on macOS, and `$XDG_STATE_HOME/dirlease` or `~/.local/state/dirlease` on Linux.
@@ -74,10 +117,11 @@ Interrupted snapshot writes can leave harmless `state-*` files. Do not edit
 state manually.
 
 `worker.pid` is advisory diagnostics (it may be stale); `leases` contains the
-versioned snapshot with hex-encoded native session/root bytes and expiry/device/
-inode fields. Lease IDs are independent of session identifiers. Back up state
-with its configured temporary root if needed; removing state loses cleanup
-knowledge. The OS may remove temporary directories earlier than their TTL.
+versioned snapshot with hex-encoded native paths and identifiers, expiry/device/
+inode fields, and optional worktree configuration and phase. Lease IDs are
+independent of session identifiers. Back up state with its configured temporary
+root if needed; removing state loses cleanup knowledge. The OS may remove
+temporary directories earlier than their TTL.
 
 ## Supervision
 

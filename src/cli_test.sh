@@ -65,3 +65,28 @@ done
 [[ ! -e "$fresh" && -d "$first" ]]
 if "$binary" --ttl nonsense >"$TEST_TMPDIR/output" 2>"$TEST_TMPDIR/error"; then exit 1; fi
 [[ ! -s "$TEST_TMPDIR/output" ]]
+
+# The agent supplies a stable identity without changing its shell environment.
+repository="$TEST_TMPDIR/repository with spaces"
+git init -q --initial-branch=main "$repository"
+printf 'tracked\n' >"$repository/tracked"
+git -C "$repository" add tracked
+git -C "$repository" -c user.name=Test -c user.email=test@example.invalid commit -qm initial
+checkout="$("$binary" worktree --session rex-agent-one --repo "$repository" --branch agent/task --ttl 2d)"
+[[ -f "$checkout/.git" && -f "$checkout/tracked" ]]
+[[ "$("$binary" worktree --session rex-agent-one --repo "$repository" --branch agent/task --ttl 3d)" == "$checkout" ]]
+[[ "$DIRLEASE_SESSION" == "test-session" ]]
+pids=()
+for index in {1..8}; do
+  "$binary" worktree --session rex-agent-one --repo "$repository" --branch agent/task >"$TEST_TMPDIR/worktree-$index" &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid"; done
+for index in {1..8}; do [[ "$(cat "$TEST_TMPDIR/worktree-$index")" == "$checkout" ]]; done
+other="$("$binary" worktree --session rex-agent-two --repo "$repository")"
+[[ "$other" != "$checkout" && -f "$other/tracked" ]]
+if "$binary" worktree --repo "$repository" >"$TEST_TMPDIR/output" 2>"$TEST_TMPDIR/error"; then exit 1; fi
+[[ ! -s "$TEST_TMPDIR/output" ]]
+grep -q 'nonempty --session' "$TEST_TMPDIR/error"
+if "$binary" worktree --session bad-ref --repo "$repository" --ref does-not-exist >"$TEST_TMPDIR/output" 2>"$TEST_TMPDIR/error"; then exit 1; fi
+[[ ! -s "$TEST_TMPDIR/output" ]]

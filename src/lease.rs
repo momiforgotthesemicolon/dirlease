@@ -1,11 +1,14 @@
 //! Durable lease records and identity-checked cleanup under private roots.
 
+use crate::worktree::Spec;
 use rustix::fs::{self as descriptor, AtFlags, Dir, Mode, OFlags};
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{
     DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt,
 };
@@ -52,6 +55,13 @@ pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Phase {
+    Pending,
+    Ready,
+    Retired,
+}
+
 #[derive(Debug)]
 struct Lease {
     id: String,
@@ -59,6 +69,8 @@ struct Lease {
     expires: u64,
     device: u64,
     inode: u64,
+    worktree: Option<Spec>,
+    phase: Phase,
 }
 
 /// Single-worker durable lease snapshot; callers must hold the worker lock.
@@ -84,6 +96,48 @@ fn unhex(text: &str) -> io::Result<Vec<u8>> {
         .collect()
 }
 
+fn decode_worktree(fields: &[&str]) -> io::Result<Option<Spec>> {
+    // Step #1: Accept directory-only records without hidden worktree metadata.
+    if fields.len() == 5 {
+        return Ok(None);
+    }
+    if fields[5] == "-" {
+        if fields[6..9] != ["-", "-", "-"] || fields[9] == "0" {
+            return Err(io::Error::other("invalid directory lease metadata"));
+        }
+        return Ok(None);
+    }
+    // Step #2: Require native absolute paths and nonempty checkout arguments.
+    let repository = PathBuf::from(OsString::from_vec(unhex(fields[5])?));
+    let common = PathBuf::from(OsString::from_vec(unhex(fields[6])?));
+    let revision = OsString::from_vec(unhex(fields[7])?);
+    let branch = if fields[8] == "-" {
+        None
+    } else {
+        Some(OsString::from_vec(unhex(fields[8])?))
+    };
+    let invalid_argument = |value: &std::ffi::OsStr| {
+        value.is_empty()
+            || value.as_bytes().contains(&0)
+            || value.as_bytes().starts_with(b"-")
+    };
+    if !repository.is_absolute()
+        || !common.is_absolute()
+        || repository.as_os_str().as_bytes().contains(&0)
+        || common.as_os_str().as_bytes().contains(&0)
+        || invalid_argument(&revision)
+        || branch.as_deref().is_some_and(invalid_argument)
+    {
+        return Err(io::Error::other("invalid worktree lease metadata"));
+    }
+    Ok(Some(Spec {
+        repository,
+        common,
+        revision,
+        branch,
+    }))
+}
+
 impl Store {
     /// Load state for a fixed native temporary root, rejecting malformed storage.
     pub(crate) fn load(state: PathBuf, root: PathBuf) -> io::Result<Self> {
@@ -103,7 +157,8 @@ impl Store {
         // Step #2: Reject malformed records rather than guessing deletion targets.
         let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
         let mut lines = text.lines();
-        if lines.next() != Some("dirlease-v1")
+        let version = lines.next();
+        if !matches!(version, Some("dirlease-v1" | "dirlease-v2"))
             || lines.next()
                 != Some(hex(store.root.as_os_str().as_bytes()).as_str())
         {
@@ -113,7 +168,12 @@ impl Store {
         }
         for line in lines {
             let fields: Vec<_> = line.split(' ').collect();
-            if fields.len() != 5
+            if fields.len()
+                != if version == Some("dirlease-v1") {
+                    5
+                } else {
+                    10
+                }
                 || fields[0].is_empty()
                 || !fields[0].bytes().all(|b| b.is_ascii_digit() || b == b'-')
             {
@@ -127,6 +187,21 @@ impl Store {
                 expires: number(2)?,
                 device: number(3)?,
                 inode: number(4)?,
+                worktree: decode_worktree(&fields)?,
+                phase: if fields.len() == 5 {
+                    Phase::Ready
+                } else {
+                    match fields[9] {
+                        "0" => Phase::Pending,
+                        "1" => Phase::Ready,
+                        "2" => Phase::Retired,
+                        _ => {
+                            return Err(io::Error::other(
+                                "invalid lease phase",
+                            ));
+                        }
+                    }
+                },
             });
         }
         Ok(store)
@@ -142,18 +217,37 @@ impl Store {
             .open(&temporary)?;
         writeln!(
             file,
-            "dirlease-v1\n{}",
+            "dirlease-v2\n{}",
             hex(self.root.as_os_str().as_bytes())
         )?;
         for lease in &self.leases {
+            let fields = match &lease.worktree {
+                Some(spec) => format!(
+                    "{} {} {} {}",
+                    hex(spec.repository.as_os_str().as_bytes()),
+                    hex(spec.common.as_os_str().as_bytes()),
+                    hex(spec.revision.as_bytes()),
+                    spec.branch.as_ref().map_or_else(
+                        || "-".into(),
+                        |name| hex(name.as_bytes())
+                    )
+                ),
+                None => "- - - -".into(),
+            };
             writeln!(
                 file,
-                "{} {} {} {} {}",
+                "{} {} {} {} {} {} {}",
                 lease.id,
                 hex(&lease.session),
                 lease.expires,
                 lease.device,
-                lease.inode
+                lease.inode,
+                fields,
+                match lease.phase {
+                    Phase::Pending => 0,
+                    Phase::Ready => 1,
+                    Phase::Retired => 2,
+                }
             )?;
         }
         file.sync_all()?;
@@ -170,6 +264,30 @@ impl Store {
         fresh: bool,
         now: u64,
     ) -> io::Result<PathBuf> {
+        self.allocate(session, ttl, fresh, now, None)
+    }
+
+    /// Create or reuse a Git checkout with a fixed deadline and persisted ownership.
+    pub(crate) fn worktree(
+        &mut self,
+        session: Vec<u8>,
+        ttl: u64,
+        fresh: bool,
+        now: u64,
+        spec: Spec,
+    ) -> io::Result<PathBuf> {
+        self.allocate(session, ttl, fresh, now, Some(spec))
+            .map(|path| path.join("checkout"))
+    }
+
+    fn allocate(
+        &mut self,
+        session: Vec<u8>,
+        ttl: u64,
+        fresh: bool,
+        now: u64,
+        worktree: Option<Spec>,
+    ) -> io::Result<PathBuf> {
         // Step #1: Validate the deadline and reuse only the latest original directory.
         let expires = now
             .checked_add(ttl)
@@ -183,7 +301,25 @@ impl Store {
                 .find(|lease| lease.session == session)
         {
             let path = self.root.join(&lease.id);
-            if lease.expires > now && matches_identity(&path, lease)? {
+            if lease.expires > now
+                && lease.phase == Phase::Ready
+                && matches_identity(&path, lease)?
+            {
+                if lease.worktree != worktree {
+                    return Err(io::Error::other(
+                        "session already has a different lease configuration; use another --session or --new",
+                    ));
+                }
+                if lease.worktree.is_some()
+                    && (!fs::symlink_metadata(path.join("checkout"))
+                        .is_ok_and(|metadata| metadata.is_dir())
+                        || !fs::symlink_metadata(path.join("checkout/.git"))
+                            .is_ok_and(|metadata| metadata.is_file()))
+                {
+                    return Err(io::Error::other(
+                        "leased checkout is missing or replaced; use --new",
+                    ));
+                }
                 return Ok(path);
             }
         }
@@ -200,11 +336,31 @@ impl Store {
             expires,
             device: metadata.dev(),
             inode: metadata.ino(),
+            phase: if worktree.is_none() {
+                Phase::Ready
+            } else {
+                Phase::Pending
+            },
+            worktree,
         });
         if let Err(error) = self.persist() {
             self.leases.pop();
             let _ = fs::remove_dir(&path);
             return Err(error);
+        }
+        // Step #3: Persist intent before Git runs; acknowledge only a complete checkout.
+        let index = self.leases.len() - 1;
+        if let Some(spec) = &self.leases[index].worktree {
+            if let Err(error) = spec.create(&path) {
+                self.leases[index].expires = now;
+                self.persist()?;
+                return Err(error);
+            }
+            self.leases[index].phase = Phase::Ready;
+            if let Err(error) = self.persist() {
+                self.leases[index].phase = Phase::Pending;
+                return Err(error);
+            }
         }
         Ok(path)
     }
@@ -212,7 +368,10 @@ impl Store {
     /// Remove overdue original directories; persist retirement and retry failures.
     pub(crate) fn cleanup(&mut self, now: u64) -> io::Result<()> {
         // Step #1: Retain failed deletions and the latest session identity; retire older entries.
-        if self.leases.iter().all(|lease| lease.expires > now) {
+        if self.leases.iter().all(|lease| {
+            lease.phase == Phase::Retired
+                || (lease.expires > now && lease.phase == Phase::Ready)
+        }) {
             return Ok(());
         }
         let original_count = self.leases.len();
@@ -226,23 +385,32 @@ impl Store {
             .collect();
         let mut retained = Vec::new();
         let mut failure = None;
-        for lease in self.leases.drain(..) {
-            if lease.expires > now {
+        let mut changed = false;
+        for mut lease in self.leases.drain(..) {
+            if lease.phase == Phase::Retired {
+                if current.contains(&lease.id) {
+                    retained.push(lease);
+                }
+                continue;
+            }
+            if lease.expires > now && lease.phase == Phase::Ready {
                 retained.push(lease);
                 continue;
             }
-            if let Err(error) = remove_lease(&self.root, &lease) {
+            if let Err(error) = cleanup_lease(&self.root, &lease) {
                 failure = Some(error);
                 retained.push(lease);
             } else if current.contains(&lease.id) {
                 // Keep the session's latest identity as a tombstone, never revive an older lease.
+                lease.phase = Phase::Retired;
+                changed = true;
                 retained.push(lease);
             }
         }
         // Step #2: Persist retirement even when another entry needs a later retry.
         self.leases = retained;
         File::open(&self.root)?.sync_all()?;
-        if self.leases.len() != original_count {
+        if changed || self.leases.len() != original_count {
             self.persist()?;
         }
         match failure {
@@ -250,6 +418,37 @@ impl Store {
             None => Ok(()),
         }
     }
+}
+
+fn cleanup_lease(root: &Path, lease: &Lease) -> io::Result<()> {
+    if let Some(spec) = &lease.worktree {
+        let registrations = spec.registrations(&root.join(&lease.id))?;
+        remove_lease(root, lease)?;
+        spec.remove_registrations(registrations)
+    } else {
+        remove_lease(root, lease)
+    }
+}
+
+/// Remove one recorded Git administrative directory without following replaced paths.
+pub(crate) fn remove_registered_directory(
+    root: &Path,
+    id: &str,
+    device: u64,
+    inode: u64,
+) -> io::Result<()> {
+    // Step #1: Bind the registration to its captured filesystem identity.
+    let registration = Lease {
+        id: id.into(),
+        session: vec![],
+        expires: 0,
+        device,
+        inode,
+        worktree: None,
+        phase: Phase::Ready,
+    };
+    // Step #2: Quarantine and remove it through retained directory descriptors.
+    remove_lease(root, &registration)
 }
 
 fn matches_identity(path: &Path, lease: &Lease) -> io::Result<bool> {
@@ -391,6 +590,28 @@ mod tests {
             private_directory(&path).unwrap();
             Self(path)
         }
+        fn repository(&self) -> Spec {
+            // Step #1: Initialize an isolated committed repository with native paths.
+            let repository = self.0.join("repository with spaces-λ");
+            fs::create_dir(&repository).unwrap();
+            git_test(&repository, &["init", "-q", "--initial-branch=main"]);
+            fs::write(repository.join("tracked"), b"original").unwrap();
+            git_test(&repository, &["add", "tracked"]);
+            // Step #2: Supply fixture identity independently of developer Git config.
+            git_test(
+                &repository,
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-qm",
+                    "initial",
+                ],
+            );
+            Spec::new(repository, "HEAD".into(), None).unwrap()
+        }
         fn store(&self) -> Store {
             Store::load(self.0.join("state"), self.0.join("temp")).unwrap()
         }
@@ -399,6 +620,250 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn git_test(repository: &Path, arguments: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repository)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn worktree_reuses_original_deadline_and_removes_only_its_registration() {
+        // Step #1: Create an agent branch and an unrelated stale registration.
+        let fixture = Fixture::new();
+        let mut spec = fixture.repository();
+        git_test(
+            &spec.repository,
+            &["config", "worktree.useRelativePaths", "true"],
+        );
+        spec.branch = Some("agent/task".into());
+        let mut store = fixture.store();
+        let checkout = store
+            .worktree(b"rex-agent".to_vec(), 10, false, 100, spec.clone())
+            .unwrap();
+        fs::write(checkout.join("dirty"), b"uncommitted").unwrap();
+        let mut detached = spec.clone();
+        detached.branch = None;
+        let unrelated = fixture.0.join("unrelated");
+        fs::create_dir(&unrelated).unwrap();
+        detached.create(&unrelated).unwrap();
+        fs::remove_dir_all(unrelated.join("checkout")).unwrap();
+        let count =
+            fs::read_dir(spec.common.join("worktrees")).unwrap().count();
+        assert_eq!(count, 2);
+        // Step #2: Reuse across restart without extending the deadline or changing config.
+        drop(store);
+        let mut store = fixture.store();
+        assert_eq!(
+            store
+                .worktree(b"rex-agent".to_vec(), 1000, false, 105, spec.clone())
+                .unwrap(),
+            checkout
+        );
+        assert!(store.create(b"rex-agent".to_vec(), 10, false, 105).is_err());
+        assert!(
+            store
+                .worktree(b"rex-agent".to_vec(), 10, false, 105, detached)
+                .is_err()
+        );
+        store.cleanup(109).unwrap();
+        assert!(checkout.exists());
+        // Step #3: Expiry removes dirty files and exactly one registration, retaining the branch.
+        store.cleanup(110).unwrap();
+        assert!(!checkout.exists());
+        assert_eq!(
+            fs::read_dir(spec.common.join("worktrees")).unwrap().count(),
+            1
+        );
+        git_test(
+            &spec.repository,
+            &["show-ref", "--verify", "refs/heads/agent/task"],
+        );
+        let recreated = store
+            .worktree(b"rex-agent".to_vec(), 10, false, 111, spec.clone())
+            .unwrap();
+        assert_ne!(recreated, checkout);
+        store.cleanup(121).unwrap();
+        fs::rename(&spec.common, spec.common.with_extension("unavailable"))
+            .unwrap();
+        store.cleanup(122).unwrap();
+    }
+
+    #[test]
+    fn worktree_cleanup_retries_locked_or_unavailable_repositories() {
+        // Step #1: Lock an expired worktree and ensure no files are removed.
+        let fixture = Fixture::new();
+        let spec = fixture.repository();
+        let mut store = fixture.store();
+        let checkout = store
+            .worktree(b"agent".to_vec(), 1, false, 100, spec.clone())
+            .unwrap();
+        git_test(
+            &spec.repository,
+            &["worktree", "lock", checkout.to_str().unwrap()],
+        );
+        assert!(store.cleanup(101).is_err());
+        assert!(checkout.join("tracked").exists());
+        git_test(
+            &spec.repository,
+            &["worktree", "unlock", checkout.to_str().unwrap()],
+        );
+        // Step #2: Missing repository metadata delays cleanup until it returns.
+        let moved = fixture.0.join("saved-git");
+        fs::rename(&spec.common, &moved).unwrap();
+        assert!(store.cleanup(102).is_err());
+        assert!(checkout.exists());
+        fs::rename(&moved, &spec.common).unwrap();
+        store.cleanup(103).unwrap();
+        assert!(!checkout.exists());
+        assert_eq!(
+            fs::read_dir(spec.common.join("worktrees")).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    fn worktree_recovery_cleans_pending_creation_and_interrupted_deletion() {
+        // Step #1: Recover intent persisted before Git's creation acknowledgement.
+        let fixture = Fixture::new();
+        let spec = fixture.repository();
+        let mut store = fixture.store();
+        let checkout = store
+            .worktree(b"pending".to_vec(), 1000, false, 100, spec.clone())
+            .unwrap();
+        store.leases[0].phase = Phase::Pending;
+        store.persist().unwrap();
+        drop(store);
+        let mut store = fixture.store();
+        store.cleanup(101).unwrap();
+        assert!(!checkout.exists());
+        // Step #2: Resume after files disappear but before registration removal.
+        let checkout = store
+            .worktree(b"interrupted".to_vec(), 1, false, 102, spec.clone())
+            .unwrap();
+        remove_lease(&store.root, store.leases.last().unwrap()).unwrap();
+        drop(store);
+        let mut store = fixture.store();
+        store.cleanup(103).unwrap();
+        assert!(!checkout.exists());
+        assert_eq!(
+            fs::read_dir(spec.common.join("worktrees")).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    fn worktree_cleanup_preserves_replaced_lease_and_external_data() {
+        // Step #1: Replace a leased root with a symlink to unrelated data.
+        let fixture = Fixture::new();
+        let spec = fixture.repository();
+        let mut store = fixture.store();
+        let checkout = store
+            .worktree(b"agent".to_vec(), 1, false, 100, spec.clone())
+            .unwrap();
+        let root = checkout.parent().unwrap();
+        let original = fixture.0.join("saved-lease");
+        fs::rename(root, &original).unwrap();
+        let external = fixture.0.join("external");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("keep"), b"safe").unwrap();
+        symlink(&external, root).unwrap();
+        // Step #2: Refuse cleanup, preserve Git's registration, and retry the restored original.
+        assert!(store.cleanup(101).is_err());
+        assert_eq!(fs::read(external.join("keep")).unwrap(), b"safe");
+        assert_eq!(
+            fs::read_dir(spec.common.join("worktrees")).unwrap().count(),
+            1
+        );
+        fs::remove_file(root).unwrap();
+        fs::rename(&original, root).unwrap();
+        store.cleanup(102).unwrap();
+        assert!(!checkout.exists());
+    }
+
+    #[test]
+    fn imports_v1_directory_leases_and_rejects_malformed_worktree_records() {
+        // Step #1: Rewrite a fixture record in the original directory-only format.
+        let fixture = Fixture::new();
+        let mut store = fixture.store();
+        let path = store.create(b"existing".to_vec(), 10, false, 100).unwrap();
+        let lease = &store.leases[0];
+        let header = format!(
+            "dirlease-v1\n{}\n",
+            hex(store.root.as_os_str().as_bytes())
+        );
+        let record = format!(
+            "{} {} {} {} {}",
+            lease.id,
+            hex(&lease.session),
+            lease.expires,
+            lease.device,
+            lease.inode
+        );
+        fs::write(store.state.join("leases"), format!("{header}{record}\n"))
+            .unwrap();
+        drop(store);
+        let mut store = fixture.store();
+        assert_eq!(
+            store.create(b"existing".to_vec(), 100, false, 101).unwrap(),
+            path
+        );
+        // Step #2: Upgrade on persistence and fail closed on invalid v2 metadata.
+        store.create(b"new".to_vec(), 10, false, 101).unwrap();
+        let state = fs::read_to_string(store.state.join("leases")).unwrap();
+        assert!(state.starts_with("dirlease-v2\n"));
+        for metadata in [
+            "- 00 - - 1",
+            "- - - - 0",
+            "00 2f 48454144 - 1",
+            "2f 2f 48454144 - 9",
+        ] {
+            fs::write(
+                store.state.join("leases"),
+                format!(
+                    "{}{} {}\n",
+                    header.replace("v1", "v2"),
+                    record,
+                    metadata
+                ),
+            )
+            .unwrap();
+            assert!(
+                Store::load(store.state.clone(), store.root.clone()).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_metadata_quarantine_is_recovered_without_broad_pruning() {
+        // Step #1: Interrupt after a registration was moved into quarantine.
+        let fixture = Fixture::new();
+        let spec = fixture.repository();
+        let mut store = fixture.store();
+        let checkout = store
+            .worktree(b"agent".to_vec(), 1, false, 100, spec.clone())
+            .unwrap();
+        let registrations =
+            spec.registrations(checkout.parent().unwrap()).unwrap();
+        let (name, _, _) = &registrations[0];
+        let root = spec.common.join("worktrees");
+        fs::rename(root.join(name), root.join(format!(".cleanup-{name}")))
+            .unwrap();
+        // Step #2: Restart and clean the captured registration and leased files.
+        drop(store);
+        let mut store = fixture.store();
+        store.cleanup(101).unwrap();
+        assert!(!checkout.exists());
+        assert_eq!(fs::read_dir(root).unwrap().count(), 0);
     }
 
     #[test]
