@@ -147,9 +147,9 @@ fn run() -> Result<(), String> {
     let command = parse(std::env::args_os().skip(1).collect())?;
     match command {
         CliCommand::Help => println!(
-            "dirlease — temporary session directories\n\nUsage: dirlease [create] [--ttl 25h] [--new]\n       dirlease worktree --session ID --repo PATH [--ref HEAD] [--branch NAME] [--ttl 25h] [--new]\n       dirlease serve\n\nAn empty DIRLEASE_SESSION defaults to the current Unix session.\nExport DIRLEASE_SESSION to share a lease across Unix sessions.\nTTL units: s, m, h, d. Reuse never extends expiry. See README.md for supervision."
+            "dirlease — temporary session directories\n\nUsage: dirlease [create] [--ttl 25h] [--new]\n       dirlease worktree --session ID --repo PATH [--ref HEAD] [--branch NAME] [--ttl 25h] [--new]\n       dirlease serve\n\nAn empty DIRLEASE_SESSION defaults to the current Unix session.\nExport DIRLEASE_SESSION to share a lease across Unix sessions.\nTTL units: s, m, h, d. Reuse never extends expiry. See docs/runtime.md for supervision."
         ),
-        CliCommand::Version => println!("dirlease 0.0.2-alpha"),
+        CliCommand::Version => println!("dirlease 0.0.3-alpha"),
         // Step #2: Keep native filesystem bytes intact on the client output.
         CliCommand::Create { ttl, fresh } => {
             let path = service::request(session()?, ttl, fresh)?;

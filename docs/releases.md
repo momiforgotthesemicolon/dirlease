@@ -8,11 +8,11 @@ brew install momiforgotthesemicolon/dirlease/dirlease
 brew test momiforgotthesemicolon/dirlease/dirlease
 ```
 
-The formula installs version `0.0.2-alpha` from the published release source
-archive, pinned by SHA-256. Homebrew compiles from source using its Rust
-dependency and `cargo install --locked`; this is the distribution exception to
-the Bazel development entry point. There are no Homebrew bottles. The formula
-test only reads help and version.
+The formula installs a published release source archive, pinned by SHA-256.
+Homebrew compiles from source using its Rust dependency and
+`cargo install --locked`; this is the distribution exception to the Bazel
+development entry point. There are no Homebrew bottles. The formula test only
+reads help and version.
 
 To replace an existing `0.1.0` installation with this prerelease, reinstall
 because Homebrew considers `0.1.0` newer:
@@ -31,9 +31,10 @@ brew services start momiforgotthesemicolon/dirlease/dirlease
 brew services stop momiforgotthesemicolon/dirlease/dirlease
 ```
 
-Installation does not start this service. Read [supervision](../README.md)
-before switching supervisors; use the same account and state/root environment as
-the clients. Do not run two supervisors for the same store.
+Installation does not start this service. Read
+[supervision](runtime.md#supervision) before switching supervisors; use the same
+account and state/root environment as the clients. Do not run two supervisors
+for the same store.
 
 ## Prepare and exercise a release
 
@@ -41,7 +42,7 @@ Use Python 3.10 or newer. Change the version together in `Cargo.toml`, the
 `dirlease` entry in `Cargo.lock`, the `--version` output in `src/main.rs`, the
 expectation in `src/cli_test.sh`, and the module version in `MODULE.bazel`. Use
 `major.minor.patch` versions with an optional prerelease suffix, such as
-`0.0.1-alpha`. Commit the complete change first. Bazel remains the build and
+`0.0.3-alpha`. Commit the complete change first. Bazel remains the build and
 test entry point:
 
 ```sh
@@ -50,7 +51,7 @@ bazel run //:format_check
 bazel run //:lint
 bazel run //:review-diff
 bazel build --config=release //:dirlease
-bazel run --config=release //tools:release -- --tag v0.0.1-alpha --binary "$PWD/bazel-bin/src/dirlease" --output /tmp/dirlease-release
+bazel run --config=release //tools:release -- --tag v0.0.3-alpha --binary "$PWD/bazel-bin/src/dirlease" --output /tmp/dirlease-release
 (cd /tmp/dirlease-release && shasum -a 256 -c SHA256SUMS)
 ```
 
@@ -78,7 +79,7 @@ Only a maintainer's deliberate `v*` tag push publishes. From an up-to-date
 git fetch origin --tags
 git switch main
 git pull --ff-only
-version=0.0.1-alpha
+version=0.0.3-alpha
 git tag "v$version"
 git push origin "v$version"
 ```
