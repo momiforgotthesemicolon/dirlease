@@ -1,3 +1,5 @@
+## THIS IS WORK IN PROGERESS
+
 # dirlease
 
 Coding agents create worktrees, build outputs, and temporary files that can
